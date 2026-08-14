@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>AI Air Draw — Draw in the air, create on screen</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✨</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ===================== ANIMATED BACKGROUND ===================== -->
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow bg-glow--a" aria-hidden="true"></div>
+<div class="bg-glow bg-glow--b" aria-hidden="true"></div>
+
+<!-- ===================== LANDING SCREEN ===================== -->
+<section id="landing" class="landing">
+  <div class="landing__scan" aria-hidden="true"></div>
+  <div class="landing__content">
+    <div class="landing__eyebrow">
+      <span class="dot dot--pulse"></span>
+      REAL-TIME HAND TRACKING · ON-DEVICE · NO UPLOAD
+    </div>
+    <h1 class="landing__title">
+      AI AIR<span class="landing__title-accent">DRAW</span>
+    </h1>
+    <p class="landing__subtitle">Draw in the air. Create on screen.</p>
+
+    <button id="startBtn" class="btn btn--primary btn--start">
+      <span class="btn__icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2a5 5 0 0 0-5 5v5a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5Z" stroke="currentColor" stroke-width="1.6"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M9 22h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </span>
+      Enable Camera &amp; Start
+    </button>
+
+    <div class="landing__hint">Requires webcam access · Works best in even lighting</div>
+
+    <div class="landing__gestures">
+      <div class="gcard">
+        <div class="gcard__glyph">☝️</div>
+        <div class="gcard__label">Index up</div>
+        <div class="gcard__desc">Draw</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard__glyph">✊</div>
+        <div class="gcard__label">Fist</div>
+        <div class="gcard__desc">Pen up</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard__glyph">✌️</div>
+        <div class="gcard__label">Two fingers</div>
+        <div class="gcard__desc">Change color</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard__glyph">🤏</div>
+        <div class="gcard__label">Pinch</div>
+        <div class="gcard__desc">Eraser</div>
+      </div>
+      <div class="gcard">
+        <div class="gcard__glyph">🖐️</div>
+        <div class="gcard__label">Open palm · hold</div>
+        <div class="gcard__desc">Clear canvas</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== LOADING OVERLAY ===================== -->
+<div id="loadingOverlay" class="loading-overlay hidden">
+  <div class="loading-box">
+    <div class="loading-ring"></div>
+    <div id="loadingText" class="loading-text">Requesting camera access…</div>
+  </div>
+</div>
+
+<!-- ===================== ERROR OVERLAY ===================== -->
+<div id="errorOverlay" class="error-overlay hidden">
+  <div class="error-box">
+    <div class="error-icon">⚠</div>
+    <div id="errorTitle" class="error-title">Something went wrong</div>
+    <div id="errorMessage" class="error-message">Unknown error.</div>
+    <button id="errorRetryBtn" class="btn btn--primary">Try Again</button>
+  </div>
+</div>
+
+<!-- ===================== APP SCREEN ===================== -->
+<main id="app" class="app hidden">
+
+  <!-- Top status bar -->
+  <header class="statusbar">
+    <div class="statusbar__brand">
+      <span class="statusbar__brand-dot"></span>
+      AIR<span>DRAW</span>
+    </div>
+
+    <div class="statusbar__stats">
+      <div class="stat">
+        <span class="stat__label">Camera</span>
+        <span id="statCamera" class="stat__value stat__value--ok">● LIVE</span>
+      </div>
+      <div class="stat">
+        <span class="stat__label">FPS</span>
+        <span id="statFps" class="stat__value">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat__label">Hand</span>
+        <span id="statHand" class="stat__value">searching…</span>
+      </div>
+      <div class="stat">
+        <span class="stat__label">Gesture</span>
+        <span id="statGesture" class="stat__value stat__value--accent">IDLE</span>
+      </div>
+    </div>
+
+    <div class="statusbar__actions">
+      <label class="toggle">
+        <input type="checkbox" id="webcamBgToggle" checked />
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+        <span class="toggle__label">Webcam BG</span>
+      </label>
+      <button id="fullscreenBtn" class="iconbtn" title="Fullscreen" aria-label="Fullscreen">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Canvas stage -->
+  <div class="stage">
+    <div id="stageFrame" class="stage__frame">
+      <video id="webcam" class="layer layer--video" autoplay playsinline muted></video>
+      <canvas id="drawCanvas" class="layer layer--draw"></canvas>
+      <canvas id="cursorCanvas" class="layer layer--cursor"></canvas>
+
+      <div class="stage__corner stage__corner--tl"></div>
+      <div class="stage__corner stage__corner--tr"></div>
+      <div class="stage__corner stage__corner--bl"></div>
+      <div class="stage__corner stage__corner--br"></div>
+
+      <div id="noHandBanner" class="hud-banner hidden">No hand detected — show your hand to the camera</div>
+      <div id="multiHandBanner" class="hud-banner hud-banner--warn hidden">Multiple hands detected — using the first one</div>
+
+      <div id="gestureToast" class="gesture-toast hidden"></div>
+    </div>
+  </div>
+
+  <!-- Control dock -->
+  <footer class="dock">
+    <div class="dock__group">
+      <label class="dock__label" for="colorPicker">Color</label>
+      <input type="color" id="colorPicker" value="#22d3ee" class="colorpicker" />
+      <div id="colorSwatches" class="swatches"></div>
+    </div>
+
+    <div class="dock__group">
+      <label class="dock__label" for="brushSize">Brush <span id="brushSizeVal">6</span>px</label>
+      <input type="range" id="brushSize" min="2" max="40" value="6" class="slider" />
+    </div>
+
+    <div class="dock__group dock__group--buttons">
+      <button id="eraserBtn" class="iconbtn" title="Eraser">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="m16 3 5 5-9.5 9.5H6L3 14.5 12.5 5 16 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 20h13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <button id="undoBtn" class="iconbtn" title="Undo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="redoBtn" class="iconbtn" title="Redo">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M15 7l5 5-5 5M20 12H9A5 5 0 0 0 9 22h1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="clearBtn" class="iconbtn" title="Clear canvas">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="saveBtn" class="btn btn--accent btn--save" title="Save drawing as PNG">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v13m0 0 4-4m-4 4-4-4M5 21h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Save PNG
+
+    
+      </button>
+    </div>
+    <p>Created by Yazra</p>
+  </footer> 
+</main>
+
+<!-- ===================== MEDIAPIPE CDN ===================== -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="script.js"></script>
+</body>
+</html>

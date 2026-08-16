@@ -34,6 +34,8 @@
   const statGesture     = document.getElementById('statGesture');
 
   const webcamBgToggle  = document.getElementById('webcamBgToggle');
+  const skeletonToggle  = document.getElementById('skeletonToggle');
+  const muteBtn         = document.getElementById('muteBtn');
   const fullscreenBtn   = document.getElementById('fullscreenBtn');
 
   const colorPicker     = document.getElementById('colorPicker');
@@ -59,6 +61,20 @@
   const GESTURE_STABLE_MS  = 120;    // debounce before a gesture is "confirmed"
   const HISTORY_LIMIT      = 25;
   const ERASER_SIZE_MULT   = 3.2;
+  const MOVE_TICK_MIN_DIST = 22;    // px the fingertip must travel before a "servo step" click plays
+  const MOVE_TICK_MIN_GAP  = 55;    // ms minimum gap between movement ticks
+
+  // Standard MediaPipe hand connectivity graph (wrist + 4 joints per finger).
+  // Used to draw the "hand rig" stick-figure overlay.
+  const HAND_CONNECTIONS = [
+    [0, 1], [1, 2], [2, 3], [3, 4],       // thumb
+    [0, 5], [5, 6], [6, 7], [7, 8],       // index
+    [5, 9], [9, 10], [10, 11], [11, 12],  // middle
+    [9, 13], [13, 14], [14, 15], [15, 16],// ring
+    [13, 17], [17, 18], [18, 19], [19, 20],// pinky
+    [0, 17],                              // palm base
+  ];
+  const FINGERTIP_IDS = new Set([4, 8, 12, 16, 20]);
 
   /* ------------------------------------------------------------------
      App state
@@ -92,6 +108,16 @@
     fps: 0,
 
     handednessLabel: null,
+
+    // hand-rig overlay
+    showSkeleton: true,
+
+    // sound
+    soundEnabled: true,
+    palmToneOsc: null,
+    palmToneGain: null,
+    lastTickPos: null,
+    lastTickTime: 0,
   };
 
   /* ------------------------------------------------------------------
@@ -108,6 +134,163 @@
   function setStatGesture(label) {
     statGesture.textContent = label;
   }
+
+  /* ------------------------------------------------------------------
+     Audio engine — synthesized robotic / mechanical sound effects.
+     Everything here is generated with the Web Audio API (oscillators +
+     filtered noise bursts). No audio files are loaded, so there's
+     nothing extra to host or bundle.
+     ------------------------------------------------------------------ */
+  let audioCtx = null;
+  let masterGain = null;
+
+  function ensureAudio() {
+    if (audioCtx) return;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return; // Web Audio unsupported: app still works, just silently
+    audioCtx = new Ctx();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = state.soundEnabled ? 0.7 : 0;
+    masterGain.connect(audioCtx.destination);
+  }
+  function resumeAudio() {
+    // Browsers suspend AudioContext until it's (re)started from inside a
+    // user-gesture call stack. We call this from the Start button handler.
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  // Short synthesized tone with an exponential attack/decay envelope —
+  // the basic building block for "beep/blip" style robotic cues.
+  function playTone({ freq = 440, freqEnd = null, duration = 0.09, type = 'square', gain = 0.14, delay = 0 } = {}) {
+    if (!audioCtx || !state.soundEnabled) return;
+    const t0 = audioCtx.currentTime + delay;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (freqEnd) osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 1), t0 + duration);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(gain, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(t0); osc.stop(t0 + duration + 0.02);
+  }
+
+  // Filtered noise burst — reads as a mechanical "click/relay/servo" sound
+  // rather than a musical tone.
+  function playClick({ duration = 0.045, gain = 0.16, freq = 1800, q = 1.2 } = {}) {
+    if (!audioCtx || !state.soundEnabled) return;
+    const t0 = audioCtx.currentTime;
+    const bufferSize = Math.max(1, Math.floor(audioCtx.sampleRate * duration));
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const bp = audioCtx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = freq;
+    bp.Q.value = q;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+    noise.connect(bp); bp.connect(g); g.connect(masterGain);
+    noise.start(t0);
+  }
+
+  // Named cues, one per gesture event:
+  function sfxEngage() {                 // entering DRAW
+    playClick({ freq: 2200, duration: 0.03, gain: 0.13 });
+    playTone({ freq: 260, freqEnd: 520, duration: 0.09, type: 'square', gain: 0.09, delay: 0.01 });
+  }
+  function sfxDisengage() {              // entering PEN UP (fist)
+    playClick({ freq: 900, duration: 0.035, gain: 0.13 });
+    playTone({ freq: 420, freqEnd: 160, duration: 0.11, type: 'square', gain: 0.08, delay: 0.01 });
+  }
+  function sfxEraser() {                 // entering ERASER (pinch)
+    playClick({ freq: 600, duration: 0.09, gain: 0.15 });
+    playTone({ freq: 180, freqEnd: 90, duration: 0.12, type: 'sawtooth', gain: 0.05, delay: 0.01 });
+  }
+  function sfxColorChange(paletteIndex) { // two-finger color cycle
+    const base = 480 + paletteIndex * 70;
+    playTone({ freq: base, duration: 0.06, type: 'square', gain: 0.1 });
+    playTone({ freq: base * 1.5, duration: 0.07, type: 'square', gain: 0.08, delay: 0.06 });
+  }
+  function sfxMoveTick() {                // subtle "servo step" while actively drawing/erasing
+    playClick({ freq: 2600 + Math.random() * 500, duration: 0.016, gain: 0.045, q: 2.2 });
+  }
+  function sfxClearTrigger() {            // canvas clear
+    playClick({ freq: 400, duration: 0.12, gain: 0.18 });
+    playTone({ freq: 500, freqEnd: 60, duration: 0.4, type: 'sawtooth', gain: 0.09, delay: 0.02 });
+  }
+
+  // A held oscillator that rises in pitch/volume while the open-palm
+  // "hold to clear" gesture is charging up — like a servo winding up.
+  function startPalmChargeTone() {
+    if (!audioCtx || !state.soundEnabled) return;
+    stopPalmChargeTone();
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 180;
+    g.gain.value = 0.0001;
+    g.gain.exponentialRampToValueAtTime(0.045, audioCtx.currentTime + 0.05);
+    osc.connect(g); g.connect(masterGain);
+    osc.start();
+    state.palmToneOsc = osc;
+    state.palmToneGain = g;
+  }
+  function updatePalmChargeTone(progress) {
+    if (!state.palmToneOsc || !audioCtx) return;
+    const freq = 180 + progress * 620;
+    state.palmToneOsc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.03);
+    state.palmToneGain.gain.setTargetAtTime(0.03 + progress * 0.06, audioCtx.currentTime, 0.05);
+  }
+  function stopPalmChargeTone() {
+    if (!state.palmToneOsc || !audioCtx) return;
+    try {
+      const g = state.palmToneGain;
+      const t0 = audioCtx.currentTime;
+      g.gain.cancelScheduledValues(t0);
+      g.gain.setValueAtTime(g.gain.value, t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.08);
+      state.palmToneOsc.stop(t0 + 0.1);
+    } catch (e) { /* already stopped, ignore */ }
+    state.palmToneOsc = null;
+    state.palmToneGain = null;
+  }
+
+  // Throttled "movement" click — plays only after the fingertip has
+  // travelled a minimum distance and enough time has passed, so it reads
+  // like discrete mechanical steps rather than a constant buzz.
+  function maybeMoveTick(x, y) {
+    const now = performance.now();
+    if (state.lastTickPos) {
+      const d = Math.hypot(x - state.lastTickPos.x, y - state.lastTickPos.y);
+      if (d > MOVE_TICK_MIN_DIST && now - state.lastTickTime > MOVE_TICK_MIN_GAP) {
+        sfxMoveTick();
+        state.lastTickPos = { x, y };
+        state.lastTickTime = now;
+      }
+    } else {
+      state.lastTickPos = { x, y };
+      state.lastTickTime = now;
+    }
+  }
+
+  muteBtn.addEventListener('click', () => {
+    state.soundEnabled = !state.soundEnabled;
+    muteBtn.classList.toggle('active', !state.soundEnabled);
+    if (masterGain) masterGain.gain.value = state.soundEnabled ? 0.7 : 0;
+    if (!state.soundEnabled) stopPalmChargeTone();
+    document.getElementById('muteBtnIcon').innerHTML = state.soundEnabled
+      ? '<path d="M4 9v6h4l5 5V4L8 9H4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'
+      : '<path d="M4 9v6h4l5 5V4L8 9H4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M17 9l5 5M22 9l-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>';
+  });
+
+  skeletonToggle.addEventListener('change', () => {
+    state.showSkeleton = skeletonToggle.checked;
+  });
 
   /* ------------------------------------------------------------------
      Color swatches
@@ -143,6 +326,7 @@
     const idx = PALETTE.indexOf(state.currentColor);
     const next = PALETTE[(idx + 1) % PALETTE.length];
     setColor(next);
+    sfxColorChange((idx + 1) % PALETTE.length);
     showToast('COLOR → ' + next.toUpperCase());
   }
 
@@ -217,6 +401,7 @@
     pushHistory(); // snapshot pre-clear state so undo restores it
     drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
     pushHistory();
+    sfxClearTrigger();
     if (flash) {
       cursorCtx.save();
       cursorCtx.fillStyle = 'rgba(255,255,255,0.35)';
@@ -329,6 +514,7 @@
     state.smoothedX = pt.x;
     state.smoothedY = pt.y;
     state.isDrawingStroke = true;
+    state.lastTickPos = null;
     pushHistory(); // snapshot BEFORE this stroke, so undo removes exactly this stroke
     drawCtx.beginPath();
     drawCtx.moveTo(pt.x, pt.y);
@@ -337,6 +523,7 @@
   function extendStroke(pt, erasing) {
     state.smoothedX = lerp(state.smoothedX, pt.x, 1 - SMOOTHING);
     state.smoothedY = lerp(state.smoothedY, pt.y, 1 - SMOOTHING);
+    maybeMoveTick(state.smoothedX, state.smoothedY);
 
     drawCtx.lineJoin = 'round';
     drawCtx.lineCap = 'round';
@@ -363,6 +550,46 @@
   function endStroke() {
     if (state.isDrawingStroke) pushHistory();
     state.isDrawingStroke = false;
+    state.lastTickPos = null;
+  }
+
+  /* ------------------------------------------------------------------
+     Hand rig overlay — draws the 21-landmark skeleton as connected
+     glowing "sticks" with joint dots, like a HUD readout of the hand.
+     ------------------------------------------------------------------ */
+  function drawHandRig(lm) {
+    if (!state.showSkeleton || !lm) return;
+
+    cursorCtx.save();
+    cursorCtx.lineCap = 'round';
+
+    // bones
+    cursorCtx.shadowColor = '#22d3ee';
+    cursorCtx.shadowBlur = 6;
+    cursorCtx.strokeStyle = 'rgba(34, 211, 238, 0.6)';
+    cursorCtx.lineWidth = 2;
+    HAND_CONNECTIONS.forEach(([a, b]) => {
+      const pa = toCanvasPoint(lm[a]);
+      const pb = toCanvasPoint(lm[b]);
+      cursorCtx.beginPath();
+      cursorCtx.moveTo(pa.x, pa.y);
+      cursorCtx.lineTo(pb.x, pb.y);
+      cursorCtx.stroke();
+    });
+
+    // joints
+    lm.forEach((point, i) => {
+      const p = toCanvasPoint(point);
+      const isTip = FINGERTIP_IDS.has(i);
+      cursorCtx.beginPath();
+      cursorCtx.shadowColor = isTip ? '#ffffff' : '#a855f7';
+      cursorCtx.shadowBlur = isTip ? 10 : 5;
+      cursorCtx.fillStyle = isTip ? 'rgba(255,255,255,0.95)' : 'rgba(168,85,247,0.85)';
+      cursorCtx.arc(p.x, p.y, isTip ? 4 : 2.6, 0, Math.PI * 2);
+      cursorCtx.fill();
+    });
+
+    cursorCtx.restore();
   }
 
   /* ------------------------------------------------------------------
@@ -382,8 +609,9 @@
     if (particles.length > 120) particles.splice(0, particles.length - 120);
   }
 
-  function drawCursorFrame(fingertip, gesture, erasing, palmProgress) {
+  function drawCursorFrame(lm, fingertip, gesture, erasing, palmProgress) {
     cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+    drawHandRig(lm);
     if (!fingertip) return;
 
     const { x, y } = fingertip;
@@ -455,8 +683,9 @@
       setStatGesture('IDLE');
       state.stableGesture = 'idle';
       state.palmHoldStart = null;
+      stopPalmChargeTone();
       endStroke();
-      drawCursorFrame(null);
+      drawCursorFrame(null, null);
       return;
     }
     noHandBanner.classList.add('hidden');
@@ -505,14 +734,20 @@
     // open palm hold -> clear
     let palmProgress = 0;
     if (gesture === 'open_palm') {
-      if (state.palmHoldStart === null) state.palmHoldStart = now;
+      if (state.palmHoldStart === null) {
+        state.palmHoldStart = now;
+        startPalmChargeTone();
+      }
       palmProgress = clamp((now - state.palmHoldStart) / PALM_HOLD_MS, 0, 1);
+      updatePalmChargeTone(palmProgress);
       if (palmProgress >= 1) {
+        stopPalmChargeTone();
         clearCanvas(true);
         state.palmHoldStart = null;
         palmProgress = 0;
       }
     } else {
+      if (state.palmHoldStart !== null) stopPalmChargeTone();
       state.palmHoldStart = null;
     }
 
@@ -526,15 +761,15 @@
       state.colorCycleArmed = true;
     }
 
-    drawCursorFrame(fingertip, gesture, erasing, palmProgress);
+    drawCursorFrame(lm, fingertip, gesture, erasing, palmProgress);
   }
 
   function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 
   function onGestureChange(prev, next) {
-    if (next === 'fist') showToast('PEN UP');
-    else if (next === 'index_only') showToast('DRAWING');
-    else if (next === 'pinch') showToast('ERASER');
+    if (next === 'fist') { showToast('PEN UP'); sfxDisengage(); }
+    else if (next === 'index_only') { showToast('DRAWING'); sfxEngage(); }
+    else if (next === 'pinch') { showToast('ERASER'); sfxEraser(); }
     else if (next === 'open_palm') showToast('HOLD TO CLEAR…');
     if (prev === 'index_only' || prev === 'pinch') endStroke();
   }
@@ -570,6 +805,9 @@
      Startup sequence: camera -> MediaPipe -> tracking loop
      ------------------------------------------------------------------ */
   async function startApp() {
+    ensureAudio();
+    resumeAudio();
+
     landing.classList.add('hidden');
     loadingOverlay.classList.remove('hidden');
     errorOverlay.classList.add('hidden');
@@ -712,6 +950,7 @@
     if (e.key === 'c') clearCanvas(true);
     if (e.key === 'e') eraserBtn.click();
     if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveBtn.click(); }
+    if (e.key === 'm') muteBtn.click();
   });
 
   /* ------------------------------------------------------------------

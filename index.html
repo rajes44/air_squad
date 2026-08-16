@@ -25,7 +25,7 @@
       REAL-TIME HAND TRACKING · ON-DEVICE · NO UPLOAD
     </div>
     <h1 class="landing__title">
-       AIR <span class="landing__title-accent">SQUAD</span>
+      AI AIR<span class="landing__title-accent">DRAW</span>
     </h1>
     <p class="landing__subtitle">Draw in the air. Create on screen.</p>
 
@@ -121,6 +121,14 @@
         <span class="toggle__track"><span class="toggle__thumb"></span></span>
         <span class="toggle__label">Webcam BG</span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" id="skeletonToggle" checked />
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+        <span class="toggle__label">Hand Rig</span>
+      </label>
+      <button id="muteBtn" class="iconbtn" title="Mute sound effects" aria-label="Mute sound effects">
+        <svg id="muteBtnIcon" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 9v6h4l5 5V4L8 9H4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
       <button id="fullscreenBtn" class="iconbtn" title="Fullscreen" aria-label="Fullscreen">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -175,12 +183,9 @@
       <button id="saveBtn" class="btn btn--accent btn--save" title="Save drawing as PNG">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v13m0 0 4-4m-4 4-4-4M5 21h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Save PNG
-
-    
       </button>
     </div>
-    <p>Created by Yazra</p>
-  </footer> 
+  </footer>
 </main>
 
 <!-- ===================== MEDIAPIPE CDN ===================== -->
